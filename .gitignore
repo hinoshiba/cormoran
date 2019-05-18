@@ -1,0 +1,5 @@
+/bin/
+*.swp
+/pkg/
+/src/giss/vendor/
+/src/giss/Gopkg.lock

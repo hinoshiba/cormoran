@@ -1,5 +1,5 @@
 /bin/
 *.swp
 /pkg/
-/src/giss/vendor/
-/src/giss/Gopkg.lock
+/src/cormoran/vendor/
+/src/cormoran/Gopkg.lock

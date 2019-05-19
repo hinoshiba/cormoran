@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"log"
 	"flag"
+	"sync"
 	"net/mail"
 	"path/filepath"
 	"mime"
 	"mime/multipart"
+	"context"
 	"syscall"
 	"strings"
 	"encoding/base64"
@@ -20,7 +22,6 @@ import (
 import (
 	"github.com/emersion/go-imap/client"
 	"github.com/emersion/go-imap"
-	"github.com/hinoshiba/goctx"
 )
 
 type File struct {
@@ -69,9 +70,9 @@ func debugLog(msg ...interface{}) {
 }
 
 func cormoran() error {
+	ctx, own_done := context.WithCancel(context.Background())
+	defer own_done()
 	debugLog("start cormoran")
-	own := goctx.NewOwner()
-	defer own.Done()
 
 	if err := setPassword(); err != nil {
 		return err
@@ -90,7 +91,7 @@ func cormoran() error {
 
 	if Folder == "" {
 		debugLog("udefined target folder. \nswitch to folders print mode.")
-		if err := echoMboxs(c, own.NewWorker()); err != nil {
+		if err := echoMboxs(ctx, c); err != nil {
 			return nil
 		}
 		fmt.Printf("please select folder and try again with choose folder name.\n")
@@ -107,32 +108,39 @@ func cormoran() error {
 	seqset := allSeqset(mb)
 	mos := make(chan *imap.Message)
 	done := make(chan error)
-	wk := own.NewWorker()
 	go func() {
+		ctxc, _ := context.WithCancel(ctx)
 		select {
 			case done <- c.Fetch(seqset, []string{"BODY[]"}, mos):
-			case <-wk.RecvCancel():
+				return
+			case <- ctxc.Done():
 				done <- nil
 				return
 		}
 	}()
 
 	p_cnt := 0
+	wg := &sync.WaitGroup{}
 	for mo := range mos {
 		p_cnt++
-		if p_cnt > Limit {
-			return nil
-		}
-		fmt.Printf("Progress : %v / %v\n", p_cnt, mb.Messages)
 
+		if Limit != 0 {
+			if p_cnt > Limit {
+				debugLog("limit break")
+				return nil
+			}
+		}
+
+		fmt.Printf("\nProgress : %v / %v [ ", p_cnt, mb.Messages)
 		il := mo.GetBody("BODY[]")
 
 		m, err := imapliteral2gomessage(il)
 		if err != nil {
+			fmt.Printf("] failed\n")
 			debugLog("target failed :", il)
 			continue
 		}
-		fmt.Printf("load email subject: %s\n", m.Header.Get("Subject"))
+		fmt.Printf("subject: %s ]\n", m.Header.Get("Subject"))
 
 		fs, err := detachFiles(m)
 		if err != nil {
@@ -141,6 +149,7 @@ func cormoran() error {
 		}
 		debugLog("attache file detect :", len(*fs))
 
+
 		for _, f := range *fs {
 			gf := f
 
@@ -148,9 +157,19 @@ func cormoran() error {
 				gf.name = fmt.Sprintf("%v-%s", p_cnt, gf.name)
 			}
 			fmt.Printf("write : %s\n", gf.name)
-			go gf.Write(ExportPath)
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				gf.Write(ExportPath)
+			}()
 		}
 	}
+
+	if err = <- done; err != nil {
+		return err
+	}
+	wg.Wait()
 
 	return nil
 }
@@ -222,14 +241,16 @@ func allSeqset(mb *imap.MailboxStatus) *imap.SeqSet {
 	return seqset
 }
 
-func echoMboxs(c *client.Client, wk goctx.Worker) error {
+func echoMboxs(ctx context.Context, c *client.Client) error {
+	ctxc, _ := context.WithCancel(ctx)
 	mbs := make(chan *imap.MailboxInfo)
 	done := make(chan error)
 
-	go func () {
+	go func() {
 		select {
-			case done <- c.List("", "*", mbs) :
-			case <-wk.RecvCancel():
+			case done <- c.List("", "*", mbs):
+				return
+			case <- ctxc.Done():
 				done <- nil
 				return
 		}
@@ -239,7 +260,7 @@ func echoMboxs(c *client.Client, wk goctx.Worker) error {
 		fmt.Printf("* %s\n", mb.Name)
 	}
 
-	return <-done
+	return <- done
 }
 
 func dialImap() (*client.Client, error) {
@@ -289,10 +310,6 @@ func termHideInput(msg string) (string, error) {
 	return string(b), nil
 }
 
-
-
-// remoras -l 10 -u hoge@example.com -e ~/Downloads/ -m walk -s 0.5 imap://example.com -p
-
 func init() {
 	var limit     int
 	var account   string
@@ -304,7 +321,7 @@ func init() {
 	flag.StringVar(&account, "u", "", "authentication accountname")
 	flag.StringVar(&e_path, "e", "./", "export directory")
 	flag.BoolVar(&debug, "d", false, "debug mode")
-	flag.StringVar(&passwd, "p", "", "authentication password")
+	flag.StringVar(&passwd, "p", "", "authentication password. interactive if not entered")
 	flag.Parse()
 
 	if flag.NArg() < 1 {

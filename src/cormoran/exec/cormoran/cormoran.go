@@ -149,8 +149,10 @@ func cormoran() error {
 			fmt.Println("failed detach: %s\n", err)
 			continue
 		}
+		if fs == nil {
+			continue
+		}
 		debugLog("attache file detect :", len(*fs))
-
 
 		for _, f := range *fs {
 			gf := f

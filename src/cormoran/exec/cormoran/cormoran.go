@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"log"
 	"flag"
-	"sync"
 	"net/mail"
 	"path/filepath"
 	"mime"
 	"mime/multipart"
+	"time"
 	"context"
 	"syscall"
 	"strings"
@@ -45,6 +45,7 @@ const (
 
 var (
 	Limit      int
+	Sleep      time.Duration
 	Mode       string
 	ExportPath string
 
@@ -120,7 +121,6 @@ func cormoran() error {
 	}()
 
 	p_cnt := 0
-	wg := &sync.WaitGroup{}
 	for mo := range mos {
 		p_cnt++
 
@@ -130,6 +130,8 @@ func cormoran() error {
 				return nil
 			}
 		}
+
+		time.Sleep(Sleep)
 
 		fmt.Printf("\nProgress : %v / %v [ ", p_cnt, mb.Messages)
 		il := mo.GetBody("BODY[]")
@@ -158,18 +160,13 @@ func cormoran() error {
 			}
 			fmt.Printf("write : %s\n", gf.name)
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				gf.Write(ExportPath)
-			}()
+			gf.Write(ExportPath)
 		}
 	}
 
 	if err = <- done; err != nil {
 		return err
 	}
-	wg.Wait()
 
 	return nil
 }
@@ -316,12 +313,14 @@ func init() {
 	var e_path    string
 	var passwd    string
 	var debug     bool
+	var sleep     int
 
 	flag.IntVar(&limit, "l", 5, "download limit. 0 = unlimited")
 	flag.StringVar(&account, "u", "", "authentication accountname")
 	flag.StringVar(&e_path, "e", "./", "export directory")
 	flag.BoolVar(&debug, "d", false, "debug mode")
 	flag.StringVar(&passwd, "p", "", "authentication password. interactive if not entered")
+	flag.IntVar(&sleep, "s", 500, "(millisecond) wait time per one email")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
@@ -342,6 +341,11 @@ func init() {
 		die("limit less than 0.")
 	}
 	Limit = limit
+
+    if sleep < 0 {
+		die("sleep less than 0.")
+	}
+	Sleep = time.Duration(sleep) * time.Millisecond
 
 	Account = account
 	Passwd =  passwd
